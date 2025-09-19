@@ -30,5 +30,4 @@ Umarım, sizler için yararlı bir program olmuştur, güncellemeler gelecektir.
 ---
 
 *   **Yol Haritası (Road Map) için Discord sunucumuza gelebilirsiniz:** https://discord.gg/VPpxS5B6
-*   **Uygulamayı indirmek için:** https://noramu.com.tr/shop
 *   **Ve "heckerlanmaya" karşı VirusTotal:** https://www.virustotal.com/gui/file/cf0d5673870322019782465d7b949767f39cf08308c190cd45a66d51163f3f07?nocache=1
