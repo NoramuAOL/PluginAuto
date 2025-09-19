@@ -23,7 +23,7 @@ Program Python ile yazılıp PyQt6 GUI aracını kullanmaktadır!
 Plugin listeleri sayesinde liste oluşturabilir, pluginleri oraya kaydedebilir ve tek tıkla veya tek tek indirebilirsiniz.
 
 ### Çok MÜTHİŞ bir program da ben bunu nasıl kuracağım?
-
+https://youtu.be/MyyTLjQMebw
 
 Umarım, sizler için yararlı bir program olmuştur, güncellemeler gelecektir.
 
