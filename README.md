@@ -95,7 +95,7 @@ python main.py
 - **GUI**: PyQt6
 - **API**: Spigot (Spiget) & Modrinth v2
 - **Async**: aiohttp, qasync
-- **Platform**: Windows, Linux, macOS
+- **Platform**: Windows
 
 ---
 
