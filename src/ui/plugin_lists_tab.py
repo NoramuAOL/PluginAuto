@@ -6,19 +6,21 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QListWidget, QListWidgetItem, QPushButton, QInputDialog,
                             QMessageBox, QSplitter, QTableWidget, QTableWidgetItem,
                             QHeaderView, QCheckBox, QMenu, QComboBox, QDialog)
-from PyQt6.QtCore import Qt
-import json
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QIcon, QPixmap
 import os
+import json
 from datetime import datetime
+from ..utils import SettingsManager, IconManager, IconCacheMixin, PluginSorter, ListManager
 
-class PluginListsTab(QWidget):
+class PluginListsTab(QWidget, IconCacheMixin):
     def __init__(self):
         super().__init__()
-        self.lists_file = "plugin_lists.json"
         self.download_manager = None
         self.current_list_name = None
         self.icon_cache = None  # İkon cache referansı
-        # Otomatik güncelleme timer'ı kaldırıldı
+        self.list_manager = ListManager()
+        self.lists_file = "plugin_lists.json"  # Liste dosyası
         self.init_ui()
         self.load_lists()
         
@@ -46,6 +48,7 @@ class PluginListsTab(QWidget):
         self.lists_widget.itemClicked.connect(self.list_selected)
         self.lists_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.lists_widget.customContextMenuRequested.connect(self.show_list_context_menu)
+        self.lists_widget.setIconSize(QSize(32, 32))  # İkon boyutunu ayarla
         left_layout.addWidget(self.lists_widget)
         
         # Liste istatistikleri
@@ -61,6 +64,12 @@ class PluginListsTab(QWidget):
         self.plugin_list_title = QLabel("Plugin listesi seçin")
         plugin_header.addWidget(self.plugin_list_title)
         plugin_header.addStretch()
+        
+        # Sıralama butonu
+        sort_btn = QPushButton("Sıralamayı Değiştir")
+        sort_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; padding: 6px 12px; }")
+        sort_btn.clicked.connect(self.change_sorting)
+        plugin_header.addWidget(sort_btn)
         
         right_layout.addLayout(plugin_header)
         
@@ -88,6 +97,12 @@ class PluginListsTab(QWidget):
         self.remove_selected_btn.clicked.connect(self.remove_selected_plugins)
         self.remove_selected_btn.setEnabled(False)
         multi_layout.addWidget(self.remove_selected_btn)
+        
+        self.transfer_selected_btn = QPushButton("Seçilenleri Aktar")
+        self.transfer_selected_btn.setStyleSheet("QPushButton { background-color: #9C27B0; color: white; padding: 6px 12px; }")
+        self.transfer_selected_btn.clicked.connect(self.transfer_selected_plugins)
+        self.transfer_selected_btn.setEnabled(False)
+        multi_layout.addWidget(self.transfer_selected_btn)
         
         right_layout.addLayout(multi_layout)
         
@@ -137,24 +152,39 @@ class PluginListsTab(QWidget):
     def load_lists(self):
         """Plugin listelerini yükle"""
         try:
-            if os.path.exists(self.lists_file):
-                with open(self.lists_file, 'r', encoding='utf-8') as f:
-                    lists_data = json.load(f)
-            else:
-                lists_data = {}
+            lists_data = self.list_manager.load_lists()
             
             self.lists_widget.clear()
             for list_name, list_info in lists_data.items():
                 # İkon ve açıklama bilgisini al
                 icon = list_info.get('icon', '📋 Varsayılan')
                 description = list_info.get('description', '')
-                
-                # Sadece emoji kısmını al
-                icon_emoji = icon.split(' ')[0] if icon else '📋'
+                custom_icon_path = list_info.get('custom_icon_path', '')
                 
                 # Liste item'ını oluştur
-                display_text = f"{icon_emoji} {list_name}"
-                item = QListWidgetItem(display_text)
+                item = QListWidgetItem()
+                
+                # Özel ikon varsa kullan
+                if custom_icon_path and os.path.exists(custom_icon_path):
+                    pixmap = QPixmap(custom_icon_path)
+                    if not pixmap.isNull():
+                        # İkonu uygun boyuta ölçeklendir (32x32)
+                        scaled_pixmap = pixmap.scaled(
+                            32, 32,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation
+                        )
+                        icon_obj = QIcon(scaled_pixmap)
+                        item.setIcon(icon_obj)
+                        item.setText(list_name)
+                    else:
+                        # Özel ikon yüklenemezse emoji kullan
+                        icon_emoji = icon.split(' ')[0] if icon else '📋'
+                        item.setText(f"{icon_emoji} {list_name}")
+                else:
+                    # Sadece emoji kısmını al
+                    icon_emoji = icon.split(' ')[0] if icon else '📋'
+                    item.setText(f"{icon_emoji} {list_name}")
                 
                 # Tooltip olarak açıklamayı ekle
                 if description:
@@ -327,9 +357,11 @@ class PluginListsTab(QWidget):
     
     def display_plugins(self, plugins):
         """Pluginleri tabloda göster"""
-        self.plugins_table.setRowCount(len(plugins))
+        # API önceliğine göre sırala
+        sorted_plugins = PluginSorter.sort_by_api_priority(plugins)
+        self.plugins_table.setRowCount(len(sorted_plugins))
         
-        for row, plugin in enumerate(plugins):
+        for row, plugin in enumerate(sorted_plugins):
             # Seçim checkbox'ı
             checkbox = QCheckBox()
             checkbox.stateChanged.connect(self.update_multi_buttons)
@@ -338,7 +370,7 @@ class PluginListsTab(QWidget):
             # İkon (cache'den veya varsayılan)
             api_type = plugin.get('api', 'N/A')
             icon_url = plugin.get('icon_url', '')
-            icon_label = self.create_plugin_icon(icon_url, api_type)
+            icon_label = IconManager.create_cached_icon(icon_url, api_type, self.icon_cache, self.download_icon_async)
             self.plugins_table.setCellWidget(row, 1, icon_label)
             
             # Plugin bilgileri
@@ -346,7 +378,7 @@ class PluginListsTab(QWidget):
             self.plugins_table.setItem(row, 3, QTableWidgetItem(plugin.get('current_version', 'N/A')))
             self.plugins_table.setItem(row, 4, QTableWidgetItem(plugin.get('api', 'N/A')))
             
-            # Aksiyon butonları
+            # İndir ve Git butonları
             button_widget = QWidget()
             button_layout = QHBoxLayout(button_widget)
             button_layout.setContentsMargins(2, 2, 2, 2)
@@ -356,68 +388,16 @@ class PluginListsTab(QWidget):
             download_btn.clicked.connect(lambda checked, p=plugin: self.download_single_plugin(p))
             button_layout.addWidget(download_btn)
             
-            remove_btn = QPushButton("Kaldır")
-            remove_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; padding: 4px 8px; }")
-            remove_btn.clicked.connect(lambda checked, p=plugin, r=row: self.remove_single_plugin(p, r))
-            button_layout.addWidget(remove_btn)
+            git_btn = QPushButton("Git")
+            git_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 4px 8px; }")
+            git_btn.clicked.connect(lambda checked, p=plugin: self.open_plugin_website(p))
+            button_layout.addWidget(git_btn)
             
             self.plugins_table.setCellWidget(row, 5, button_widget)
     
-    def create_api_icon(self, api_type):
-        """API ikonu oluştur"""
-        from PyQt6.QtWidgets import QLabel
-        from PyQt6.QtCore import Qt
-        
-        icon_label = QLabel()
-        icon_label.setFixedSize(48, 48)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        if api_type == "Modrinth":
-            icon_label.setText("M")
-            icon_label.setStyleSheet("border: 1px solid #1bd96a; border-radius: 4px; background-color: #1bd96a; color: white; font-weight: bold; font-size: 16px;")
-        elif api_type == "Spigot":
-            icon_label.setText("S")
-            icon_label.setStyleSheet("border: 1px solid #f4a261; border-radius: 4px; background-color: #f4a261; color: white; font-weight: bold; font-size: 16px;")
-        else:
-            icon_label.setText("?")
-            icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px; background-color: #ccc; color: white; font-weight: bold; font-size: 16px;")
-        
-        return icon_label
+
     
-    def create_plugin_icon(self, icon_url, api_type):
-        """Plugin ikonu oluştur (cache'den veya varsayılan)"""
-        from PyQt6.QtWidgets import QLabel
-        from PyQt6.QtGui import QPixmap
-        from PyQt6.QtCore import Qt
-        
-        icon_label = QLabel()
-        icon_label.setFixedSize(48, 48)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px;")
-        
-        # İkon URL'si varsa ve cache sistemimiz varsa
-        if icon_url and icon_url.strip() and self.icon_cache is not None:
-            # Cache'de var mı kontrol et
-            if icon_url in self.icon_cache:
-                # Cache'den al
-                cached_pixmap = self.icon_cache[icon_url]
-                if not cached_pixmap.isNull():
-                    scaled_pixmap = cached_pixmap.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    icon_label.setPixmap(scaled_pixmap)
-                    return icon_label
-        
-        # Cache'de yok veya URL yok, varsayılan ikon göster
-        if api_type == "Modrinth":
-            icon_label.setText("M")
-            icon_label.setStyleSheet("border: 1px solid #1bd96a; border-radius: 4px; background-color: #1bd96a; color: white; font-weight: bold; font-size: 16px;")
-        elif api_type == "Spigot":
-            icon_label.setText("S")
-            icon_label.setStyleSheet("border: 1px solid #f4a261; border-radius: 4px; background-color: #f4a261; color: white; font-weight: bold; font-size: 16px;")
-        else:
-            icon_label.setText("?")
-            icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px; background-color: #ccc; color: white; font-weight: bold; font-size: 16px;")
-        
-        return icon_label
+
     
     def clear_plugin_table(self):
         """Plugin tablosunu temizle"""
@@ -444,13 +424,16 @@ class PluginListsTab(QWidget):
         
         self.download_selected_btn.setEnabled(selected_count > 0)
         self.remove_selected_btn.setEnabled(selected_count > 0)
+        self.transfer_selected_btn.setEnabled(selected_count > 0)
         
         if selected_count > 0:
             self.download_selected_btn.setText(f"Seçilenleri İndir ({selected_count})")
             self.remove_selected_btn.setText(f"Seçilenleri Kaldır ({selected_count})")
+            self.transfer_selected_btn.setText(f"Seçilenleri Aktar ({selected_count})")
         else:
             self.download_selected_btn.setText("Seçilenleri İndir")
             self.remove_selected_btn.setText("Seçilenleri Kaldır")
+            self.transfer_selected_btn.setText("Seçilenleri Aktar")
     
     def select_all_plugins(self):
         """Tüm pluginleri seç"""
@@ -511,18 +494,7 @@ class PluginListsTab(QWidget):
     
     def get_list_names(self):
         """Mevcut liste isimlerini döndür"""
-        try:
-            if not os.path.exists(self.lists_file):
-                return []
-                
-            with open(self.lists_file, 'r', encoding='utf-8') as f:
-                lists_data = json.load(f)
-            
-            return list(lists_data.keys())
-            
-        except Exception as e:
-            print(f"Liste isimleri alınamadı: {e}")
-            return []
+        return self.list_manager.get_list_names()
     
     def download_single_plugin(self, plugin):
         """Tek plugin indir"""
@@ -682,6 +654,74 @@ class PluginListsTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Çoklu indirme hatası: {e}")
     
+    def open_plugin_website(self, plugin):
+        """Plugin'in web sitesini aç"""
+        try:
+            import webbrowser
+            
+            api_type = plugin.get('api', 'Modrinth')
+            plugin_id = plugin.get('plugin_id', '')
+            
+            if api_type == "Modrinth":
+                # Modrinth URL'si
+                if plugin_id:
+                    url = f"https://modrinth.com/plugin/{plugin_id}"
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Plugin ID bulunamadı!")
+                    return
+            else:  # Spigot
+                # Spigot URL'si
+                if plugin_id:
+                    url = f"https://www.spigotmc.org/resources/{plugin_id}/"
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Plugin ID bulunamadı!")
+                    return
+            
+            webbrowser.open(url)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Web sitesi açılamadı: {e}")
+    
+
+    
+
+    
+    def change_sorting(self):
+        """Sıralamayı değiştir"""
+        try:
+            current_priority = SettingsManager.get_api_priority()
+            
+            # Mevcut sıralamayı göster ve değiştirme seçenekleri sun
+            options = ["Modrinth Önce", "Spigot Önce", "Rastgele"]
+            current_index = 0
+            if current_priority in options:
+                current_index = options.index(current_priority)
+            
+            new_priority, ok = QInputDialog.getItem(
+                self, 
+                "Sıralama Değiştir", 
+                "API Öncelik Sırası:", 
+                options, 
+                current_index, 
+                False
+            )
+            
+            if ok and new_priority != current_priority:
+                # Ayarları güncelle
+                if SettingsManager.update_api_priority(new_priority):
+                    # Tabloyu yeniden yükle
+                    if self.current_list_name:
+                        self.load_plugins_for_list(self.current_list_name)
+                    
+                    QMessageBox.information(self, "Başarılı", f"Sıralama '{new_priority}' olarak değiştirildi.")
+                else:
+                    QMessageBox.critical(self, "Hata", "Sıralama ayarı kaydedilemedi!")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Sıralama değiştirilemedi: {e}")
+    
+
+
     def remove_selected_plugins(self):
         """Seçili pluginleri kaldır"""
         selected_count = 0
@@ -822,3 +862,63 @@ class PluginListsTab(QWidget):
                 
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Liste düzenlenemedi: {e}")
+    
+    def transfer_selected_plugins(self):
+        """Seçili plugin'leri başka listeye aktar"""
+        try:
+            # Seçili plugin'leri topla
+            selected_plugins = []
+            selected_rows = []
+            
+            for row in range(self.plugins_table.rowCount()):
+                checkbox = self.plugins_table.cellWidget(row, 0)
+                if checkbox and checkbox.isChecked():
+                    selected_rows.append(row)
+            
+            if not selected_rows:
+                QMessageBox.warning(self, "Uyarı", "Aktarılacak plugin seçilmedi!")
+                return
+            
+            # Mevcut liste verilerini al
+            with open(self.lists_file, 'r', encoding='utf-8') as f:
+                lists_data = json.load(f)
+            
+            if self.current_list_name not in lists_data:
+                QMessageBox.warning(self, "Uyarı", "Kaynak liste bulunamadı!")
+                return
+            
+            plugins = lists_data[self.current_list_name]['plugins']
+            
+            # Seçili plugin'leri al
+            for row in selected_rows:
+                if row < len(plugins):
+                    selected_plugins.append(plugins[row])
+            
+            if not selected_plugins:
+                QMessageBox.warning(self, "Uyarı", "Aktarılacak plugin bulunamadı!")
+                return
+            
+            # Transfer dialog'unu aç
+            from .transfer_plugins_dialog import TransferPluginsDialog
+            dialog = TransferPluginsDialog(selected_plugins, self.get_list_names(), self.current_list_name, self)
+            
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                transfer_data = dialog.get_transfer_data()
+                target_list = transfer_data['target_list']
+                transfer_mode = transfer_data['transfer_mode']
+                plugins_to_transfer = transfer_data['plugins']
+                
+                # Plugin'leri aktar
+                success, message = self.list_manager.transfer_plugins(
+                    self.current_list_name, 
+                    target_list, 
+                    plugins_to_transfer
+                )
+                
+                if success:
+                    QMessageBox.information(self, "Başarılı", message)
+                else:
+                    QMessageBox.warning(self, "Uyarı", message)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Plugin aktarma hatası: {e}")

@@ -8,8 +8,9 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt
 import os
 import json
+from ..utils import SettingsManager, IconManager, IconCacheMixin, PluginSorter
 
-class DownloadManagerTab(QWidget):
+class DownloadManagerTab(QWidget, IconCacheMixin):
     def __init__(self):
         super().__init__()
         self.downloads_file = "downloads.json"
@@ -35,6 +36,11 @@ class DownloadManagerTab(QWidget):
         header_layout.addWidget(QLabel("İndirilen Pluginler"))
         
         header_layout.addStretch()
+        
+        sort_btn = QPushButton("Sıralamayı Değiştir")
+        sort_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; padding: 6px 12px; }")
+        sort_btn.clicked.connect(self.change_sorting)
+        header_layout.addWidget(sort_btn)
         
         refresh_btn = QPushButton("Yenile")
         refresh_btn.clicked.connect(self.load_downloads)
@@ -98,7 +104,7 @@ class DownloadManagerTab(QWidget):
         self.downloads_table.setColumnWidth(3, 120)  # Versiyon
         self.downloads_table.setColumnWidth(4, 80)   # API
         self.downloads_table.setColumnWidth(5, 140)  # Tarih
-        self.downloads_table.setColumnWidth(7, 200)  # Aksiyon
+        self.downloads_table.setColumnWidth(7, 280)  # Aksiyon
         
         # Satır yüksekliği
         self.downloads_table.verticalHeader().setDefaultSectionSize(60)
@@ -120,18 +126,21 @@ class DownloadManagerTab(QWidget):
                 except (json.JSONDecodeError, FileNotFoundError):
                     downloads = []
             
-            self.downloads_table.setRowCount(len(downloads))
+            # API önceliğine göre sırala
+            sorted_downloads = PluginSorter.sort_by_api_priority(downloads)
+            self.downloads_table.setRowCount(len(sorted_downloads))
             
-            for row, download in enumerate(downloads):
+            for row, download in enumerate(sorted_downloads):
                 # Seçim checkbox'ı
                 from PyQt6.QtWidgets import QCheckBox
                 checkbox = QCheckBox()
                 checkbox.stateChanged.connect(self.update_multi_buttons)
                 self.downloads_table.setCellWidget(row, 0, checkbox)
                 
-                # İkon
+                # İkon (cache destekli)
                 api_type = download.get('api', 'N/A')
-                icon_label = self.create_api_icon(api_type)
+                icon_url = download.get('icon_url', '')
+                icon_label = IconManager.create_cached_icon(icon_url, api_type, self.icon_cache, self.download_icon_async)
                 self.downloads_table.setCellWidget(row, 1, icon_label)
                 
                 self.downloads_table.setItem(row, 2, QTableWidgetItem(download.get('name', 'N/A')))
@@ -140,33 +149,30 @@ class DownloadManagerTab(QWidget):
                 self.downloads_table.setItem(row, 5, QTableWidgetItem(download.get('date', 'N/A')))
                 self.downloads_table.setItem(row, 6, QTableWidgetItem(download.get('path', 'N/A')))
                 
-                # Aksiyon butonları
+                # Yeniden İndir, Dosya Aç ve Git butonları
                 button_widget = QWidget()
                 button_layout = QHBoxLayout(button_widget)
                 button_layout.setContentsMargins(2, 2, 2, 2)
                 
-                # Yeniden indir butonu
                 redownload_btn = QPushButton("Yeniden İndir")
                 redownload_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 4px 8px; }")
                 redownload_btn.clicked.connect(lambda checked, d=download: self.redownload_plugin(d))
                 button_layout.addWidget(redownload_btn)
                 
-                # Dosya aç butonu
                 open_file_btn = QPushButton("Dosya Aç")
-                open_file_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 4px 8px; }")
+                open_file_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; padding: 4px 8px; }")
                 open_file_btn.clicked.connect(lambda checked, d=download: self.open_file_location(d))
                 button_layout.addWidget(open_file_btn)
                 
-                # Sil butonu
-                delete_btn = QPushButton("Sil")
-                delete_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; padding: 4px 8px; }")
-                delete_btn.clicked.connect(lambda checked, d=download, r=row: self.delete_single_download(d, r))
-                button_layout.addWidget(delete_btn)
+                git_btn = QPushButton("Git")
+                git_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 4px 8px; }")
+                git_btn.clicked.connect(lambda checked, d=download: self.open_plugin_website(d))
+                button_layout.addWidget(git_btn)
                 
                 self.downloads_table.setCellWidget(row, 7, button_widget)
             
-            self.stats_label.setText(f"Toplam indirme: {len(downloads)}")
-            print(f"İndirme geçmişi yüklendi: {len(downloads)} kayıt")
+            self.stats_label.setText(f"Toplam indirme: {len(sorted_downloads)}")
+            print(f"İndirme geçmişi yüklendi: {len(sorted_downloads)} kayıt")
             
         except Exception as e:
             print(f"İndirme geçmişi yüklenirken hata: {e}")
@@ -274,26 +280,7 @@ class DownloadManagerTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Çoklu indirme hatası: {e}")
     
-    def create_api_icon(self, api_type):
-        """API ikonu oluştur"""
-        from PyQt6.QtWidgets import QLabel
-        from PyQt6.QtCore import Qt
-        
-        icon_label = QLabel()
-        icon_label.setFixedSize(48, 48)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        if api_type == "Modrinth":
-            icon_label.setText("M")
-            icon_label.setStyleSheet("border: 1px solid #1bd96a; border-radius: 4px; background-color: #1bd96a; color: white; font-weight: bold; font-size: 16px;")
-        elif api_type == "Spigot":
-            icon_label.setText("S")
-            icon_label.setStyleSheet("border: 1px solid #f4a261; border-radius: 4px; background-color: #f4a261; color: white; font-weight: bold; font-size: 16px;")
-        else:
-            icon_label.setText("?")
-            icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px; background-color: #ccc; color: white; font-weight: bold; font-size: 16px;")
-        
-        return icon_label   
+   
  
     def select_all_downloads(self):
         """Tüm indirmeleri seç"""
@@ -338,7 +325,8 @@ class DownloadManagerTab(QWidget):
                 # Windows'ta dosya konumunu aç
                 subprocess.run(['explorer', '/select,', file_path])
             else:
-                QMessageBox.warning(self, "Uyarı", f"Dosya bulunamadı:\n{file_path}")
+                plugin_name = download_record.get('name', 'Plugin')
+                QMessageBox.warning(self, "Hata", f"{plugin_name} silindi!\n\nDosya yolu: {file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Dosya konumu açılamadı: {e}")
     
@@ -405,6 +393,82 @@ class DownloadManagerTab(QWidget):
             
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Yeniden indirme hatası: {e}")
+    
+    def open_plugin_website(self, download_record):
+        """Plugin'in web sitesini aç"""
+        try:
+            import webbrowser
+            
+            plugin_name = download_record.get('name', '')
+            api_type = download_record.get('api', 'Modrinth')
+            
+            if api_type == "Modrinth":
+                # Plugin adından slug oluştur (basit yaklaşım)
+                slug = plugin_name.lower().replace(' ', '-').replace('_', '-')
+                url = f"https://modrinth.com/plugin/{slug}"
+            else:  # Spigot
+                # Spigot için arama sayfasına yönlendir
+                url = f"https://www.spigotmc.org/search/1/?q={plugin_name}&t=resource&c[child_nodes]=1&c[nodes][0]=4&o=relevance"
+            
+            webbrowser.open(url)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Web sitesi açılamadı: {e}")
+    
+
+    
+    def change_sorting(self):
+        """Sıralamayı değiştir"""
+        try:
+            current_priority = SettingsManager.get_api_priority()
+            
+            # Mevcut sıralamayı göster ve değiştirme seçenekleri sun
+            from PyQt6.QtWidgets import QInputDialog
+            
+            options = ["Modrinth Önce", "Spigot Önce", "Rastgele"]
+            current_index = 0
+            if current_priority in options:
+                current_index = options.index(current_priority)
+            
+            new_priority, ok = QInputDialog.getItem(
+                self, 
+                "Sıralama Değiştir", 
+                "API Öncelik Sırası:", 
+                options, 
+                current_index, 
+                False
+            )
+            
+            if ok and new_priority != current_priority:
+                # Ayarları güncelle
+                if SettingsManager.update_api_priority(new_priority):
+                    # Tabloyu yeniden yükle
+                    self.load_downloads()
+                    QMessageBox.information(self, "Başarılı", f"Sıralama '{new_priority}' olarak değiştirildi.")
+                else:
+                    QMessageBox.critical(self, "Hata", "Sıralama ayarı kaydedilemedi!")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Sıralama değiştirilemedi: {e}")
+    
+    def sort_downloads_by_api_priority(self, downloads):
+        """İndirmeleri API önceliğine göre sırala"""
+        api_priority = self.get_api_priority()
+        
+        if api_priority == "Modrinth Önce":
+            # Önce Modrinth, sonra Spigot
+            modrinth_downloads = [d for d in downloads if d.get('api') == 'Modrinth']
+            spigot_downloads = [d for d in downloads if d.get('api') == 'Spigot']
+            other_downloads = [d for d in downloads if d.get('api') not in ['Modrinth', 'Spigot']]
+            return modrinth_downloads + spigot_downloads + other_downloads
+        elif api_priority == "Spigot Önce":
+            # Önce Spigot, sonra Modrinth
+            spigot_downloads = [d for d in downloads if d.get('api') == 'Spigot']
+            modrinth_downloads = [d for d in downloads if d.get('api') == 'Modrinth']
+            other_downloads = [d for d in downloads if d.get('api') not in ['Modrinth', 'Spigot']]
+            return spigot_downloads + modrinth_downloads + other_downloads
+        else:  # Rastgele veya diğer
+            return downloads
     
     def delete_selected_downloads(self):
         """Seçili indirme kayıtlarını sil"""

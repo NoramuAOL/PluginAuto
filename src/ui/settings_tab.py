@@ -78,6 +78,22 @@ class SettingsTab(QWidget):
         
         api_layout.addLayout(default_api_layout)
         
+        # API Öncelik Sırası (Karışık aramada)
+        priority_layout = QHBoxLayout()
+        priority_layout.addWidget(QLabel("Karışık Aramada Öncelik:"))
+        
+        self.api_priority_combo = QComboBox()
+        self.api_priority_combo.addItems(["Modrinth Önce", "Spigot Önce", "Rastgele"])
+        self.api_priority_combo.setCurrentText(self.settings.get('api_priority', 'Modrinth Önce'))
+        priority_layout.addWidget(self.api_priority_combo)
+        
+        api_layout.addLayout(priority_layout)
+        
+        # Paralı pluginleri göster
+        self.show_premium_checkbox = QCheckBox("Paralı Pluginleri Göster (Spigot)")
+        self.show_premium_checkbox.setChecked(self.settings.get('show_premium_plugins', False))
+        api_layout.addWidget(self.show_premium_checkbox)
+        
         layout.addWidget(api_group)
         
         # Butonlar
@@ -114,7 +130,9 @@ class SettingsTab(QWidget):
             'default_folder': 'plugins',
             'concurrent_downloads': 3,
             'search_limit': 20,
-            'default_api': 'Modrinth'
+            'default_api': 'Modrinth',
+            'api_priority': 'Modrinth Önce',
+            'show_premium_plugins': False
         }
     
     def save_settings(self):
@@ -124,7 +142,9 @@ class SettingsTab(QWidget):
                 'default_folder': self.folder_input.text(),
                 'concurrent_downloads': self.concurrent_spin.value(),
                 'search_limit': self.limit_spin.value(),
-                'default_api': self.default_api_combo.currentText()
+                'default_api': self.default_api_combo.currentText(),
+                'api_priority': self.api_priority_combo.currentText(),
+                'show_premium_plugins': self.show_premium_checkbox.isChecked()
             }
             
             with open(self.settings_file, 'w', encoding='utf-8') as f:
@@ -155,9 +175,14 @@ class SettingsTab(QWidget):
         self.concurrent_spin.setValue(self.settings.get('concurrent_downloads', 3))
         self.limit_spin.setValue(self.settings.get('search_limit', 20))
         self.default_api_combo.setCurrentText(self.settings.get('default_api', 'Modrinth'))
+        self.api_priority_combo.setCurrentText(self.settings.get('api_priority', 'Modrinth Önce'))
     
     def browse_folder(self):
         """Klasör seç"""
         folder = QFileDialog.getExistingDirectory(self, "Varsayılan İndirme Klasörü Seç")
         if folder:
             self.folder_input.setText(folder)
+    
+    def get_settings(self):
+        """Mevcut ayarları döndür"""
+        return self.settings

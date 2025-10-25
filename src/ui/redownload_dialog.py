@@ -101,28 +101,43 @@ class RedownloadWorker(QThread):
             # İndirme klasörünü oluştur
             os.makedirs(os.path.dirname(download_path), exist_ok=True)
             
-            if api_type == "Modrinth" and selected_version:
-                api = ModrinthAPI()
-                download_url = selected_version.get('files', [{}])[0].get('url')
-                if download_url:
-                    success = await api.download_plugin(download_url, download_path, progress_callback)
+            api = None
+            spigot_api = None
+            try:
+                if api_type == "Modrinth" and selected_version:
+                    api = ModrinthAPI()
+                    download_url = selected_version.get('files', [{}])[0].get('url')
+                    if download_url:
+                        success = await api.download_plugin(download_url, download_path, progress_callback)
+                    else:
+                        success = False
+                elif api_type == "Spigot" and selected_version:
+                    api = SpigotAPI()
+                    # Spigot için plugin ID'sini bul
+                    spigot_api = SpigotAPI()
+                    search_results = spigot_api.search_plugins(plugin_name, size=5)
+                    if search_results:
+                        plugin_id = search_results[0].get('id')
+                        version_id = selected_version.get('id')
+                        success = await api.download_plugin(plugin_id, version_id, download_path, progress_callback)
+                    else:
+                        success = False
                 else:
                     success = False
-            elif api_type == "Spigot" and selected_version:
-                api = SpigotAPI()
-                # Spigot için plugin ID'sini bul
-                spigot_api = SpigotAPI()
-                search_results = spigot_api.search_plugins(plugin_name, size=5)
-                if search_results:
-                    plugin_id = search_results[0].get('id')
-                    version_id = selected_version.get('id')
-                    success = await api.download_plugin(plugin_id, version_id, download_path, progress_callback)
-                else:
-                    success = False
-            else:
-                success = False
-            
-            return success
+                
+                return success
+            finally:
+                # API session'larını kapat
+                if api:
+                    try:
+                        await api.close_aio_session()
+                    except:
+                        pass
+                if spigot_api:
+                    try:
+                        await spigot_api.close_aio_session()
+                    except:
+                        pass
             
         except asyncio.CancelledError:
             print("Yeniden indirme iptal edildi")

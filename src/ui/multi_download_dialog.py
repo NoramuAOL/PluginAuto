@@ -100,20 +100,29 @@ class MultiDownloadWorker(QThread):
                 if not self.cancelled:
                     self.item_progress_updated.emit(row, progress)
             
-            if api_type == "Modrinth":
-                api = ModrinthAPI()
-                download_url = version.get('files', [{}])[0].get('url')
-                if download_url:
-                    success = await api.download_plugin(download_url, download_path, progress_callback)
-                else:
-                    success = False
-            else:  # Spigot
-                api = SpigotAPI()
-                plugin_id = plugin.get('id')
-                version_id = version.get('id')
-                success = await api.download_plugin(plugin_id, version_id, download_path, progress_callback)
-            
-            return success
+            api = None
+            try:
+                if api_type == "Modrinth":
+                    api = ModrinthAPI()
+                    download_url = version.get('files', [{}])[0].get('url')
+                    if download_url:
+                        success = await api.download_plugin(download_url, download_path, progress_callback)
+                    else:
+                        success = False
+                else:  # Spigot
+                    api = SpigotAPI()
+                    plugin_id = plugin.get('id')
+                    version_id = version.get('id')
+                    success = await api.download_plugin(plugin_id, version_id, download_path, progress_callback)
+                
+                return success
+            finally:
+                # API session'ını kapat
+                if api:
+                    try:
+                        await api.close_aio_session()
+                    except:
+                        pass
             
         except asyncio.CancelledError:
             print("İndirme iptal edildi")

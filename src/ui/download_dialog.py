@@ -32,6 +32,7 @@ class DownloadWorker(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
+            api = None
             try:
                 if self.api_type == "Modrinth":
                     api = ModrinthAPI()
@@ -54,6 +55,13 @@ class DownloadWorker(QThread):
                 self.download_finished.emit(success, self.download_path)
                 
             finally:
+                # API session'ını kapat
+                if api:
+                    try:
+                        loop.run_until_complete(api.close_aio_session())
+                    except:
+                        pass
+                
                 # Loop'u güvenli şekilde kapat
                 try:
                     pending = asyncio.all_tasks(loop)

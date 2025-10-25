@@ -5,66 +5,74 @@ Plugin arama sekmesi
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                             QComboBox, QMessageBox, QHeaderView)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot
 import asyncio
 
 from ..api.modrinth_api import ModrinthAPI
 from ..api.spigot_api import SpigotAPI
 from .download_dialog import DownloadDialog
+from ..utils import SettingsManager, IconManager, IconCacheMixin, PluginSorter
 
 
 
-class SearchWorker(QThread):
+class SearchWorker(QObject):
+    """Worker object for plugin search - PyQt6 best practice"""
     results_ready = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
     
     def __init__(self, api_type, query):
         super().__init__()
         self.api_type = api_type
         self.query = query
-        
-    def run(self):
+    
+    @pyqtSlot()
+    def do_work(self):
+        """Arama işlemini gerçekleştir"""
         try:
             results = []
+            
+            # Paralı plugin ayarını al
+            show_premium = SettingsManager.get_show_premium_plugins()
             
             if self.api_type == "Karışık":
                 # Hem Modrinth hem Spigot'tan ara
                 modrinth_api = ModrinthAPI()
                 spigot_api = SpigotAPI()
                 
-                modrinth_results = modrinth_api.search_plugins(self.query, limit=10)
-                spigot_results = spigot_api.search_plugins(self.query, size=10)
+                modrinth_results = modrinth_api.search_plugins(self.query, limit=10, include_premium=show_premium)
+                spigot_results = spigot_api.search_plugins(self.query, size=10, include_premium=show_premium)
                 
                 # Modrinth sonuçlarını işaretle
                 for result in modrinth_results:
                     result['_api_source'] = 'Modrinth'
-                    results.append(result)
                 
                 # Spigot sonuçlarını işaretle
                 for result in spigot_results:
                     result['_api_source'] = 'Spigot'
-                    results.append(result)
                 
-                # Karıştır
-                import random
-                random.shuffle(results)
+                # API önceliğine göre sırala
+                results = PluginSorter.sort_search_results(modrinth_results, spigot_results)
                 
             elif self.api_type == "Modrinth":
                 api = ModrinthAPI()
-                results = api.search_plugins(self.query)
+                results = api.search_plugins(self.query, include_premium=show_premium)
                 for result in results:
                     result['_api_source'] = 'Modrinth'
             else:  # Spigot
                 api = SpigotAPI()
-                results = api.search_plugins(self.query)
+                results = api.search_plugins(self.query, include_premium=show_premium)
                 for result in results:
                     result['_api_source'] = 'Spigot'
             
             self.results_ready.emit(results)
+            
         except Exception as e:
             self.error_occurred.emit(str(e))
+        finally:
+            self.finished.emit()
 
-class PluginSearchTab(QWidget):
+class PluginSearchTab(QWidget, IconCacheMixin):
     def __init__(self):
         super().__init__()
         self.download_manager = None
@@ -173,21 +181,42 @@ class PluginSearchTab(QWidget):
             
         api_type = self.api_combo.currentText()
         
-        # Önceki worker'ı durdur
-        if hasattr(self, 'search_worker') and self.search_worker.isRunning():
-            self.search_worker.terminate()
-            self.search_worker.wait()
+        # Önceki worker'ı temizle
+        self.cleanup_worker()
         
         # Arama butonunu devre dışı bırak
         self.search_button.setEnabled(False)
         self.search_button.setText("Aranıyor...")
         
-        # Worker thread başlat
+        # Worker object pattern (PyQt6 best practice)
+        self.search_thread = QThread()
         self.search_worker = SearchWorker(api_type, query)
+        self.search_worker.moveToThread(self.search_thread)
+        
+        # Bağlantılar
+        self.search_thread.started.connect(self.search_worker.do_work)
+        self.search_worker.finished.connect(self.search_thread.quit)
+        self.search_worker.finished.connect(self.search_worker.deleteLater)
+        self.search_thread.finished.connect(self.search_thread.deleteLater)
+        
         self.search_worker.results_ready.connect(self.display_results)
         self.search_worker.error_occurred.connect(self.handle_error)
         self.search_worker.finished.connect(self.search_finished)
-        self.search_worker.start()
+        
+        self.search_thread.start()
+    
+    def cleanup_worker(self):
+        """Worker'ı güvenli şekilde temizle"""
+        if hasattr(self, 'search_thread'):
+            try:
+                if self.search_thread.isRunning():
+                    self.search_thread.quit()
+                    self.search_thread.wait(5000)  # 5 saniye bekle
+                    if self.search_thread.isRunning():
+                        print("Warning: Search thread did not stop gracefully")
+            except RuntimeError:
+                # Thread zaten silinmiş, sorun değil
+                pass
     
     def search_finished(self):
         """Arama tamamlandığında çağrılır"""
@@ -263,7 +292,7 @@ class PluginSearchTab(QWidget):
             self.results_table.setCellWidget(row, 0, checkbox)
             
             # İkon
-            icon_label = self.create_icon_label(icon_url, api_source)
+            icon_label = IconManager.create_cached_icon(icon_url, api_source, self.icon_cache, self.download_icon_async)
             self.results_table.setCellWidget(row, 1, icon_label)
             
             self.results_table.setItem(row, 2, QTableWidgetItem(name))
@@ -272,7 +301,7 @@ class PluginSearchTab(QWidget):
             self.results_table.setItem(row, 5, QTableWidgetItem(api_source))
             self.results_table.setItem(row, 6, QTableWidgetItem(str(downloads)))
             
-            # İndir butonu ve çıkar butonu
+            # İndir ve Git butonları
             button_widget = QWidget()
             button_layout = QHBoxLayout(button_widget)
             button_layout.setContentsMargins(2, 2, 2, 2)
@@ -282,10 +311,10 @@ class PluginSearchTab(QWidget):
             download_btn.clicked.connect(lambda checked, p=plugin: self.download_plugin(p))
             button_layout.addWidget(download_btn)
             
-            remove_btn = QPushButton("Çıkar")
-            remove_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; padding: 4px 8px; }")
-            remove_btn.clicked.connect(lambda checked, r=row: self.remove_plugin_from_results(r))
-            button_layout.addWidget(remove_btn)
+            git_btn = QPushButton("Git")
+            git_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 4px 8px; }")
+            git_btn.clicked.connect(lambda checked, p=plugin: self.open_plugin_website(p))
+            button_layout.addWidget(git_btn)
             
             self.results_table.setCellWidget(row, 7, button_widget)
         
@@ -299,7 +328,36 @@ class PluginSearchTab(QWidget):
         api_source = plugin.get('_api_source', self.api_combo.currentText())
         dialog = DownloadDialog(plugin, api_source, self)
         dialog.set_download_manager(self.download_manager)
-        dialog.exec()  
+        dialog.exec()
+    
+    def open_plugin_website(self, plugin):
+        """Plugin'in web sitesini aç"""
+        try:
+            import webbrowser
+            
+            api_source = plugin.get('_api_source', self.api_combo.currentText())
+            
+            if api_source == "Modrinth":
+                # Modrinth URL'si
+                project_id = plugin.get('project_id') or plugin.get('slug', '')
+                if project_id:
+                    url = f"https://modrinth.com/plugin/{project_id}"
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Plugin ID bulunamadı!")
+                    return
+            else:  # Spigot
+                # Spigot URL'si
+                plugin_id = plugin.get('id', '')
+                if plugin_id:
+                    url = f"https://www.spigotmc.org/resources/{plugin_id}/"
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Plugin ID bulunamadı!")
+                    return
+            
+            webbrowser.open(url)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Web sitesi açılamadı: {e}")  
   
     def select_all_results(self):
         """Tüm sonuçları seç"""
@@ -373,73 +431,7 @@ class PluginSearchTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Hata", f"Çoklu indirme hatası: {e}")    
    
-    def create_icon_label(self, icon_url, api_source):
-        """Plugin ikonu oluştur (cache desteği ile)"""
-        from PyQt6.QtWidgets import QLabel
-        from PyQt6.QtGui import QPixmap
-        from PyQt6.QtCore import Qt, QThread, pyqtSignal
-        import requests
-        
-        icon_label = QLabel()
-        icon_label.setFixedSize(48, 48)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px;")
-        
-        # İkon URL'si varsa ve cache sistemimiz varsa
-        if icon_url and icon_url.strip() and self.icon_cache is not None:
-            # Cache'de var mı kontrol et
-            if icon_url in self.icon_cache:
-                # Cache'den al
-                cached_pixmap = self.icon_cache[icon_url]
-                if not cached_pixmap.isNull():
-                    scaled_pixmap = cached_pixmap.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    icon_label.setPixmap(scaled_pixmap)
-                    return icon_label
-            else:
-                # Cache'de yok, arka planda indir
-                self.download_icon_async(icon_url, icon_label)
-        
-        # Varsayılan ikon (API'ye göre) - indirme sırasında gösterilecek
-        if api_source == "Modrinth":
-            icon_label.setText("M")
-            icon_label.setStyleSheet("border: 1px solid #1bd96a; border-radius: 4px; background-color: #1bd96a; color: white; font-weight: bold; font-size: 16px;")
-        else:
-            icon_label.setText("S")
-            icon_label.setStyleSheet("border: 1px solid #f4a261; border-radius: 4px; background-color: #f4a261; color: white; font-weight: bold; font-size: 16px;")
-        
-        return icon_label
-    
-    def download_icon_async(self, icon_url, icon_label):
-        """İkonu arka planda indir ve cache'e ekle"""
-        if not hasattr(self, 'icon_workers'):
-            self.icon_workers = []
-        
-        # Worker thread oluştur
-        worker = IconDownloadWorker(icon_url)
-        worker.icon_downloaded.connect(lambda pixmap: self.on_icon_downloaded(icon_url, pixmap, icon_label))
-        worker.start()
-        
-        # Worker'ı listede tut (garbage collection'dan korunmak için)
-        self.icon_workers.append(worker)
-        
-        # Eski worker'ları temizle
-        self.icon_workers = [w for w in self.icon_workers if w.isRunning()]
-    
-    def on_icon_downloaded(self, icon_url, pixmap, icon_label):
-        """İkon indirildiğinde çağrılır"""
-        if not pixmap.isNull() and self.icon_cache is not None:
-            # Cache'e ekle
-            self.icon_cache[icon_url] = pixmap
-            
-            # Label'ı güncelle
-            scaled_pixmap = pixmap.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            icon_label.setPixmap(scaled_pixmap)
-            icon_label.setStyleSheet("border: 1px solid #ccc; border-radius: 4px;")
-            
-            # Ana pencereye cache güncellemesini bildir
-            main_window = self.window()
-            if hasattr(main_window, 'update_cache_stats'):
-                main_window.update_cache_stats()
+
     
     def handle_selection_change(self, state, plugin_key):
         """Seçim değişikliğini işle"""
@@ -494,6 +486,8 @@ class PluginSearchTab(QWidget):
         
         menu.exec(self.results_table.mapToGlobal(position))
     
+
+    
     def add_plugin_to_list(self, plugin):
         """Plugin'i listeye ekleme dialog'unu aç"""
         if not self.lists_tab:
@@ -503,32 +497,4 @@ class PluginSearchTab(QWidget):
         from .add_to_list_dialog import AddToListDialog
         dialog = AddToListDialog(plugin, self.lists_tab, self)
         dialog.exec()
-class IconDownloadWorker(QThread):
-    """İkon indirme worker thread'i"""
-    icon_downloaded = pyqtSignal(object)  # QPixmap signal
-    
-    def __init__(self, icon_url):
-        super().__init__()
-        self.icon_url = icon_url
-        
-    def run(self):
-        """İkonu indir"""
-        try:
-            import requests
-            from PyQt6.QtGui import QPixmap
-            
-            headers = {
-                'User-Agent': 'Minecraft-Plugin-Downloader/1.0'
-            }
-            response = requests.get(self.icon_url, timeout=10, headers=headers)
-            
-            if response.status_code == 200:
-                pixmap = QPixmap()
-                pixmap.loadFromData(response.content)
-                self.icon_downloaded.emit(pixmap)
-            else:
-                self.icon_downloaded.emit(QPixmap())
-        except Exception as e:
-            print(f"İkon indirme hatası ({self.icon_url}): {e}")
-            from PyQt6.QtGui import QPixmap
-            self.icon_downloaded.emit(QPixmap())
+

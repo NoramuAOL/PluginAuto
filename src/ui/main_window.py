@@ -18,6 +18,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         # Global ikon cache sistemi
         self.icon_cache = {}  # URL -> QPixmap mapping
+        # API instance'larını takip et (session cleanup için)
+        self._api_instances = []
         self.init_ui()
         
     def init_ui(self):
@@ -31,14 +33,7 @@ class MainWindow(QMainWindow):
         # Ana layout
         layout = QVBoxLayout(central_widget)
         
-        # Başlık
-        title_label = QLabel("Minecraft Plugin Downloader")
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
+
         
         # Tab widget
         self.tab_widget = QTabWidget()
@@ -95,3 +90,42 @@ class MainWindow(QMainWindow):
         """İkon cache'ini temizle"""
         self.icon_cache.clear()
         self.update_cache_stats()
+    
+    def closeEvent(self, event):
+        """Pencere kapatılırken temizlik yap"""
+        import asyncio
+        
+        # Worker thread'leri temizle
+        if hasattr(self.search_tab, 'cleanup_worker'):
+            try:
+                self.search_tab.cleanup_worker()
+            except:
+                pass
+        
+        # İkon worker'larını temizle
+        if hasattr(self.search_tab, 'icon_workers'):
+            for worker in list(self.search_tab.icon_workers.values()):
+                try:
+                    if worker.isRunning():
+                        worker.quit()
+                        worker.wait(1000)
+                except:
+                    pass
+        
+        # Async session'ları kapat
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Event loop çalışıyorsa, task olarak ekle
+                for api_instance in self._api_instances:
+                    if hasattr(api_instance, 'close_aio_session'):
+                        loop.create_task(api_instance.close_aio_session())
+            else:
+                # Event loop çalışmıyorsa, direkt çalıştır
+                for api_instance in self._api_instances:
+                    if hasattr(api_instance, 'close_aio_session'):
+                        loop.run_until_complete(api_instance.close_aio_session())
+        except:
+            pass
+        
+        event.accept()
